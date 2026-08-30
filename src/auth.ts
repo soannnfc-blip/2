@@ -6,6 +6,9 @@ import { db } from "@/lib/db";
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
+  // Nécessaire derrière un tunnel/reverse proxy dont le nom d'hôte public diffère de
+  // celui du serveur local (ex: tunnel de démonstration, Vercel derrière un domaine custom).
+  trustHost: true,
   providers: [
     Credentials({
       name: "Identifiants",
