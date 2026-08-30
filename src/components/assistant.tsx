@@ -289,8 +289,8 @@ export function Assistant({
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Écris ou parle à ton assistant…"
-          className="flex-1 rounded-full border border-neutral-800 bg-neutral-900 px-4 py-3 text-white outline-none focus:border-emerald-600"
+          placeholder="Écris ou parle…"
+          className="min-w-0 flex-1 rounded-full border border-neutral-800 bg-neutral-900 px-4 py-3 text-white outline-none focus:border-emerald-600"
         />
         {micSupported && (
           <button
