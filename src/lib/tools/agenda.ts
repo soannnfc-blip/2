@@ -1,11 +1,9 @@
-import { calendarClient } from "@/lib/google";
+import { getCalendarProvider } from "@/lib/providers/calendar";
 import type { ToolDefinition } from "./types";
-
-const CALENDAR_ID = "primary";
 
 export const listerEvenements: ToolDefinition = {
   name: "lister_evenements",
-  description: "Liste les événements de l'agenda Google Calendar entre deux dates (ISO 8601).",
+  description: "Liste les événements de l'agenda entre deux dates (ISO 8601).",
   input_schema: {
     type: "object",
     properties: {
@@ -15,30 +13,15 @@ export const listerEvenements: ToolDefinition = {
     required: ["debut", "fin"],
   },
   handler: async ({ debut, fin }) => {
-    const cal = await calendarClient();
-    const res = await cal.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: debut,
-      timeMax: fin,
-      singleEvents: true,
-      orderBy: "startTime",
-    });
-    return {
-      evenements: (res.data.items ?? []).map((e) => ({
-        id: e.id,
-        titre: e.summary,
-        debut: e.start?.dateTime ?? e.start?.date,
-        fin: e.end?.dateTime ?? e.end?.date,
-        lieu: e.location,
-        description: e.description,
-      })),
-    };
+    const provider = await getCalendarProvider();
+    const evenements = await provider.list(debut, fin);
+    return { evenements, source: provider.source };
   },
 };
 
 export const creerEvenement: ToolDefinition = {
   name: "creer_evenement",
-  description: "Crée un événement dans Google Calendar. Nécessite confirmation utilisateur.",
+  description: "Crée un événement dans l'agenda. Nécessite confirmation utilisateur.",
   input_schema: {
     type: "object",
     properties: {
@@ -50,25 +33,15 @@ export const creerEvenement: ToolDefinition = {
     },
     required: ["titre", "debut", "fin"],
   },
-  handler: async ({ titre, debut, fin, description, lieu }) => {
-    const cal = await calendarClient();
-    const res = await cal.events.insert({
-      calendarId: CALENDAR_ID,
-      requestBody: {
-        summary: titre,
-        description,
-        location: lieu,
-        start: { dateTime: debut },
-        end: { dateTime: fin },
-      },
-    });
-    return { id: res.data.id, lien: res.data.htmlLink };
+  handler: async (input) => {
+    const provider = await getCalendarProvider();
+    return provider.create(input);
   },
 };
 
 export const modifierEvenement: ToolDefinition = {
   name: "modifier_evenement",
-  description: "Modifie un événement existant dans Google Calendar. Nécessite confirmation utilisateur.",
+  description: "Modifie un événement existant de l'agenda. Nécessite confirmation utilisateur.",
   input_schema: {
     type: "object",
     properties: {
@@ -81,31 +54,23 @@ export const modifierEvenement: ToolDefinition = {
     },
     required: ["id"],
   },
-  handler: async ({ id, titre, debut, fin, description, lieu }) => {
-    const cal = await calendarClient();
-    const patch: Record<string, unknown> = {};
-    if (titre) patch.summary = titre;
-    if (description) patch.description = description;
-    if (lieu) patch.location = lieu;
-    if (debut) patch.start = { dateTime: debut };
-    if (fin) patch.end = { dateTime: fin };
-
-    const res = await cal.events.patch({ calendarId: CALENDAR_ID, eventId: id, requestBody: patch });
-    return { id: res.data.id, lien: res.data.htmlLink };
+  handler: async ({ id, ...patch }) => {
+    const provider = await getCalendarProvider();
+    return provider.update(id, patch);
   },
 };
 
 export const supprimerEvenement: ToolDefinition = {
   name: "supprimer_evenement",
-  description: "Supprime définitivement un événement de Google Calendar. Action irréversible — confirmation forte requise.",
+  description: "Supprime définitivement un événement de l'agenda. Action irréversible — confirmation forte requise.",
   input_schema: {
     type: "object",
     properties: { id: { type: "string" } },
     required: ["id"],
   },
   handler: async ({ id }) => {
-    const cal = await calendarClient();
-    await cal.events.delete({ calendarId: CALENDAR_ID, eventId: id });
+    const provider = await getCalendarProvider();
+    await provider.remove(id);
     return { supprime: true };
   },
 };

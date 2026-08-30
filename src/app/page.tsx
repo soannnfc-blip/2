@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { obtenirDashboard } from "@/lib/tools/ventes";
 import { listerTaches } from "@/lib/tools/taches";
 import { isGoogleConnected } from "@/lib/google";
+import { isShopifyConfigured } from "@/lib/shopify";
+import { getAIProvider } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { Assistant } from "@/components/assistant";
 
@@ -17,12 +19,17 @@ export default async function Home() {
     db.alerte.findMany({ where: { lue: false }, orderBy: { createdAt: "desc" }, take: 10 }),
   ]);
 
+  const provider = getAIProvider();
+
   return (
     <Assistant
       initialDashboard={dashboard as any}
       initialTaches={(taches as any).taches}
       initialAlertes={alertes}
       googleConnected={googleConnected}
+      shopifyConnected={isShopifyConfigured()}
+      moteurId={provider.id}
+      moteurLabel={provider.label}
     />
   );
 }

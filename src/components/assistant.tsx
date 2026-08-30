@@ -11,9 +11,13 @@ type Dashboard = {
   ca_semaine: number;
   ca_mois: number;
   ca_annee: number;
+  evolution_ca_mois_pourcent: number | null;
   commandes_mois: number;
   panier_moyen_mois: number;
   produits_plus_vendus: { nom: string; ca: number; ventes: number }[];
+  depenses_mois: number;
+  marge_estimee_mois: number;
+  cotisations_estimees_mois: number;
 };
 type Tache = { id: string; titre: string; priorite: string; dateLimite: string | null; enRetard: boolean };
 type Alerte = { id: string; type: string; titre: string; message: string; niveau: string };
@@ -40,17 +44,26 @@ export function Assistant({
   initialTaches,
   initialAlertes,
   googleConnected,
+  shopifyConnected,
+  moteurId,
+  moteurLabel,
 }: {
   initialDashboard: Dashboard;
   initialTaches: Tache[];
   initialAlertes: Alerte[];
   googleConnected: boolean;
+  shopifyConnected: boolean;
+  moteurId: "mock" | "anthropic";
+  moteurLabel: string;
 }) {
+  const estDemo = moteurId === "mock";
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "welcome",
       role: "assistant",
-      contenu: "Bonjour. Je suis NOTEO AI. Demande-moi ce qui se passe dans ton entreprise, ou parle-moi directement.",
+      contenu: estDemo
+        ? "Bonjour. Je suis NOTEO AI, en mode démo (aucune IA payante utilisée) avec des données fictives. Essaie par exemple : \"Regarde mes mails importants\", \"Cherche Julien\", \"Quel est mon chiffre d'affaires ce mois-ci ?\" ou \"Fais une facture pour Julien Notéo d'une carte NFC à 60€\"."
+        : "Bonjour. Je suis NOTEO AI. Demande-moi ce qui se passe dans ton entreprise, ou parle-moi directement.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -165,9 +178,15 @@ export function Assistant({
       <header className="flex items-center justify-between border-b border-neutral-900 px-5 pb-3 pt-4">
         <div>
           <h1 className="text-lg font-semibold text-white">NOTEO AI</h1>
-          <p className="flex items-center gap-1.5 text-xs text-neutral-500">
-            <span className={`h-1.5 w-1.5 rounded-full ${googleConnected ? "bg-emerald-500" : "bg-amber-500"}`} />
-            {googleConnected ? "Connecté" : "Google non connecté"}
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
+            <span className="flex items-center gap-1.5">
+              <span className={`h-1.5 w-1.5 rounded-full ${estDemo ? "bg-sky-500" : "bg-emerald-500"}`} />
+              {moteurLabel}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className={`h-1.5 w-1.5 rounded-full ${googleConnected ? "bg-emerald-500" : "bg-neutral-600"}`} />
+              {googleConnected ? "Gmail/Calendar connectés" : "Mails/agenda en démo"}
+            </span>
           </p>
         </div>
         <button
@@ -178,21 +197,40 @@ export function Assistant({
         </button>
       </header>
 
-      {!googleConnected && (
-        <a
-          href="/api/connect/google"
-          className="mx-5 mt-3 rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-2.5 text-xs text-amber-300"
-        >
-          Connecter Gmail / Calendar / Drive →
-        </a>
+      {estDemo ? (
+        <div className="mx-5 mt-3 rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-2.5 text-xs text-sky-300">
+          Mode démo actif — mails, ventes, factures et agenda utilisent des données fictives
+          {shopifyConnected ? "" : " (y compris les ventes Shopify)"}. Aucun appel IA payant, aucun email réel envoyé.
+          Ajoute <code className="text-sky-200">ANTHROPIC_API_KEY</code> dans <code className="text-sky-200">.env</code> pour activer Claude.
+        </div>
+      ) : (
+        !googleConnected && (
+          <a
+            href="/api/connect/google"
+            className="mx-5 mt-3 rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-2.5 text-xs text-amber-300"
+          >
+            Connecter Gmail / Calendar / Drive →
+          </a>
+        )
       )}
 
       <section className="flex gap-3 overflow-x-auto px-5 py-4" style={{ scrollbarWidth: "none" }}>
         <StatCard label="Aujourd'hui" value={formatEUR(dashboard.ca_jour)} />
         <StatCard label="Cette semaine" value={formatEUR(dashboard.ca_semaine)} />
-        <StatCard label="Ce mois" value={formatEUR(dashboard.ca_mois)} />
+        <StatCard
+          label="Ce mois"
+          value={formatEUR(dashboard.ca_mois)}
+          hint={
+            dashboard.evolution_ca_mois_pourcent == null
+              ? undefined
+              : `${dashboard.evolution_ca_mois_pourcent >= 0 ? "+" : ""}${dashboard.evolution_ca_mois_pourcent}% vs mois dernier`
+          }
+        />
         <StatCard label="Commandes (mois)" value={String(dashboard.commandes_mois)} />
         <StatCard label="Panier moyen" value={formatEUR(dashboard.panier_moyen_mois)} />
+        <StatCard label="Dépenses (mois)" value={formatEUR(dashboard.depenses_mois)} />
+        <StatCard label="Marge estimée" value={formatEUR(dashboard.marge_estimee_mois)} />
+        <StatCard label="Cotisations est." value={formatEUR(dashboard.cotisations_estimees_mois)} />
       </section>
 
       {alertes.length > 0 && (
@@ -316,11 +354,12 @@ export function Assistant({
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function StatCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-[130px] shrink-0 rounded-2xl border border-neutral-900 bg-neutral-900/50 px-4 py-3">
       <p className="text-[11px] uppercase tracking-wide text-neutral-500">{label}</p>
       <p className="mt-1 text-xl font-semibold text-white">{value}</p>
+      {hint && <p className="mt-0.5 text-[11px] text-neutral-500">{hint}</p>}
     </div>
   );
 }

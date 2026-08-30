@@ -1,8 +1,7 @@
 import { db } from "@/lib/db";
 import { genererFacturePdf } from "@/lib/facture-pdf";
 import { saveFactureBuffer } from "@/lib/storage";
-import { gmailClient } from "@/lib/google";
-import { buildMimeWithAttachment } from "@/lib/mime";
+import { getMailProvider } from "@/lib/providers/mail";
 import { readFile } from "fs/promises";
 import type { ToolDefinition } from "./types";
 
@@ -100,7 +99,9 @@ export const creerFacture: ToolDefinition = {
 
 export const envoyerFacture: ToolDefinition = {
   name: "envoyer_facture",
-  description: "Envoie par email la facture PDF déjà générée au client. Nécessite confirmation utilisateur préalable.",
+  description:
+    "Envoie par email la facture PDF déjà générée au client. Nécessite confirmation utilisateur préalable. " +
+    "En mode démonstration, l'email n'est pas réellement transmis : il est enregistré comme envoyé dans les données de démo.",
   input_schema: {
     type: "object",
     properties: {
@@ -119,22 +120,20 @@ export const envoyerFacture: ToolDefinition = {
     if (!destinataire) return { erreur: "Aucune adresse email pour ce client." };
 
     const pdfBuffer = await readFile(facture.pdfPath);
-    const gmail = await gmailClient();
-    const raw = buildMimeWithAttachment({
-      to: destinataire,
-      subject: `Facture ${facture.numero}`,
-      body: message ?? `Bonjour ${facture.client.nom},\n\nVeuillez trouver ci-joint la facture ${facture.numero}.\n\nCordialement.`,
-      attachment: { filename: `${facture.numero}.pdf`, mimeType: "application/pdf", content: pdfBuffer },
+    const provider = await getMailProvider();
+    await provider.sendAvecPieceJointe({
+      destinataire,
+      sujet: `Facture ${facture.numero}`,
+      corps: message ?? `Bonjour ${facture.client.nom},\n\nVeuillez trouver ci-joint la facture ${facture.numero}.\n\nCordialement.`,
+      piecesJointes: [{ filename: `${facture.numero}.pdf`, mimeType: "application/pdf", content: pdfBuffer }],
     });
-
-    await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
 
     await db.facture.update({
       where: { id: facture.id },
       data: { statut: "ENVOYEE", envoyeeLe: new Date(), emailEnvoyeA: destinataire },
     });
 
-    return { envoyee: true, destinataire };
+    return { envoyee: true, destinataire, demo: provider.source === "demo" };
   },
 };
 

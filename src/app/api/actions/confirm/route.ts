@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { TOOL_BY_NAME } from "@/lib/tools/registry";
-import { anthropic, CLAUDE_MODEL, SYSTEM_PROMPT } from "@/lib/anthropic";
-import type Anthropic from "@anthropic-ai/sdk";
+import { SYSTEM_PROMPT } from "@/lib/anthropic";
+import { getAIProvider } from "@/lib/ai";
+import type { AIMessage } from "@/lib/ai";
 
 export async function POST(req: Request) {
   const session = await auth();
@@ -43,6 +44,7 @@ export async function POST(req: Request) {
     }
   }
 
+  const provider = getAIProvider();
   let reply = confirmer ? "Fait." : "D'accord, action annulée.";
 
   if (conversationId) {
@@ -53,19 +55,14 @@ export async function POST(req: Request) {
       orderBy: { createdAt: "asc" },
       take: 40,
     });
-    const messages: Anthropic.MessageParam[] = historique.map((m) => ({
+    const messages: AIMessage[] = historique.map((m) => ({
       role: m.role === "USER" ? "user" : "assistant",
       content: m.contenu,
-    }));
+    })) as AIMessage[];
     messages.push({ role: "user", content: systemMessage });
 
-    const response = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 512,
-      system: SYSTEM_PROMPT,
-      messages,
-    });
-    const textBlocks = response.content.filter((b) => b.type === "text") as Anthropic.TextBlock[];
+    const response = await provider.converse({ system: SYSTEM_PROMPT, messages, tools: [] });
+    const textBlocks = response.content.filter((b) => b.type === "text");
     reply = textBlocks.map((b) => b.text).join("\n") || reply;
 
     await db.message.create({ data: { conversationId, role: "ASSISTANT", contenu: reply } });

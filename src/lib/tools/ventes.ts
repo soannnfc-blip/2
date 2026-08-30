@@ -1,7 +1,11 @@
 import { db } from "@/lib/db";
-import { startOfDay, startOfWeek, startOfMonth, startOfYear } from "date-fns";
+import { startOfDay, startOfWeek, startOfMonth, startOfYear, subMonths, endOfMonth } from "date-fns";
 import { isShopifyConfigured, listRecentOrders } from "@/lib/shopify";
 import type { ToolDefinition } from "./types";
+
+// Taux forfaitaire indicatif de cotisations sociales pour une micro-entreprise de vente/services.
+// Volontairement approximatif — présenté à l'utilisateur comme une estimation, pas un calcul fiscal exact.
+const TAUX_COTISATIONS_ESTIMEES = 0.22;
 
 export const ajouterVente: ToolDefinition = {
   name: "ajouter_vente",
@@ -85,16 +89,27 @@ async function sommeEntre(depuis: Date) {
 export const obtenirDashboard: ToolDefinition = {
   name: "obtenir_dashboard",
   description:
-    "Retourne les statistiques business en temps réel : CA jour/semaine/mois/année, nombre de commandes, " +
-    "panier moyen, produits les plus vendus. À utiliser pour toute question sur le chiffre d'affaires ou les ventes.",
+    "Retourne les statistiques business en temps réel : CA jour/semaine/mois/année, évolution du CA, nombre de " +
+    "commandes, panier moyen, produits les plus vendus, dépenses, marge et cotisations estimées. À utiliser pour " +
+    "toute question sur le chiffre d'affaires, les ventes ou la santé financière de l'entreprise.",
   input_schema: { type: "object", properties: {} },
   handler: async () => {
     const now = new Date();
-    const [jour, semaine, mois, annee] = await Promise.all([
+    const debutMoisPrecedent = startOfMonth(subMonths(now, 1));
+    const finMoisPrecedent = endOfMonth(subMonths(now, 1));
+
+    const [jour, semaine, mois, annee, moisPrecedent, depensesMoisAgg] = await Promise.all([
       sommeEntre(startOfDay(now)),
       sommeEntre(startOfWeek(now, { weekStartsOn: 1 })),
       sommeEntre(startOfMonth(now)),
       sommeEntre(startOfYear(now)),
+      db.vente
+        .aggregate({
+          where: { date: { gte: debutMoisPrecedent, lte: finMoisPrecedent }, statut: "PAYEE" },
+          _sum: { montant: true },
+        })
+        .then((r) => Number(r._sum.montant ?? 0)),
+      db.depense.aggregate({ where: { date: { gte: startOfMonth(now) } }, _sum: { montant: true } }),
     ]);
 
     const topProduits = await db.vente.groupBy({
@@ -109,11 +124,18 @@ export const obtenirDashboard: ToolDefinition = {
       where: { id: { in: topProduits.map((p) => p.produitId!).filter(Boolean) } },
     });
 
+    const depensesMois = Number(depensesMoisAgg._sum.montant ?? 0);
+    const margeEstimeeMois = Math.round((mois.total - depensesMois) * 100) / 100;
+    const cotisationsEstimeesMois = Math.round(mois.total * TAUX_COTISATIONS_ESTIMEES * 100) / 100;
+    const evolutionCaMois = moisPrecedent > 0 ? Math.round(((mois.total - moisPrecedent) / moisPrecedent) * 1000) / 10 : null;
+
     return {
       ca_jour: jour.total,
       ca_semaine: semaine.total,
       ca_mois: mois.total,
       ca_annee: annee.total,
+      ca_mois_precedent: moisPrecedent,
+      evolution_ca_mois_pourcent: evolutionCaMois,
       commandes_mois: mois.commandes,
       panier_moyen_mois: mois.commandes > 0 ? Math.round((mois.total / mois.commandes) * 100) / 100 : 0,
       produits_plus_vendus: topProduits.map((p) => ({
@@ -121,6 +143,10 @@ export const obtenirDashboard: ToolDefinition = {
         ca: Number(p._sum.montant ?? 0),
         ventes: p._count,
       })),
+      depenses_mois: depensesMois,
+      marge_estimee_mois: margeEstimeeMois,
+      cotisations_estimees_mois: cotisationsEstimeesMois,
+      cotisations_estimees_note: "Estimation indicative (taux forfaitaire), à vérifier avec un comptable.",
     };
   },
 };

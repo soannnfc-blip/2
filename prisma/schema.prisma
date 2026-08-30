@@ -176,8 +176,9 @@ model Tache {
   @@index([dateLimite])
 }
 
-// Cache local des événements Google Calendar (la source de vérité reste Calendar,
-// ce cache sert au dashboard et à la détection proactive de rendez-vous importants).
+// Événements d'agenda. Si Google Calendar est connecté, c'est un cache (la source de
+// vérité reste Calendar) ; sinon (mode démo), c'est la source de vérité elle-même —
+// googleEventId contient alors un id synthétique "demo-...".
 model Evenement {
   id             String   @id @default(cuid())
   googleEventId  String   @unique
@@ -189,6 +190,39 @@ model Evenement {
   syncedAt       DateTime @default(now())
 
   @@index([debut])
+}
+
+// --- Emails de démonstration (mode démo, aucun Gmail réel requis) --------------------------------------------------------------
+
+model EmailDemo {
+  id          String   @id @default(cuid())
+  threadId    String
+  de          String // nom affiché de l'expéditeur
+  deEmail     String
+  a           String   @default("moi@noteo.ai")
+  sujet       String
+  corps       String
+  extrait     String
+  date        DateTime
+  lu          Boolean  @default(false)
+  important   Boolean  @default(false)
+  dossier     String   @default("INBOX") // "INBOX" | "SENT"
+  repondu     Boolean  @default(false)
+
+  @@index([threadId])
+  @@index([date])
+}
+
+// --- Dépenses (pour le dashboard : marge estimée, cotisations estimées) --------------------------------------------------------------
+
+model Depense {
+  id          String   @id @default(cuid())
+  description String
+  categorie   String // "loyer" | "materiel" | "logiciel" | "marketing" | "autre"
+  montant     Decimal  @db.Decimal(10, 2)
+  date        DateTime @default(now())
+
+  @@index([date])
 }
 
 // --- Mémoire de l'IA / préférences --------------------------------------------------------------

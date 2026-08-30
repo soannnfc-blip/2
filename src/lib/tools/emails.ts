@@ -1,72 +1,50 @@
-import { gmailClient } from "@/lib/google";
+import { getMailProvider } from "@/lib/providers/mail";
 import type { ToolDefinition } from "./types";
 
-function decodeBody(payload: any): string {
-  if (!payload) return "";
-  if (payload.body?.data) {
-    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
-  }
-  const part = payload.parts?.find((p: any) => p.mimeType === "text/plain") ?? payload.parts?.[0];
-  if (part) return decodeBody(part);
-  return "";
-}
-
-function headerValue(headers: any[], name: string) {
-  return headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+function estRequeteAvecOperateur(q: string) {
+  return /^(is:|from:|to:|subject:|label:)/i.test(q.trim());
 }
 
 export const rechercherEmails: ToolDefinition = {
   name: "rechercher_emails",
   description:
-    "Recherche des emails Gmail par mot-clé, nom d'expéditeur, sujet, ou requête Gmail avancée. " +
+    "Recherche des emails par mot-clé, nom d'expéditeur, sujet, ou requête Gmail avancée (is:unread, is:important, from:...). " +
     "Si la recherche par nom trouve plusieurs personnes différentes (homonymes, adresses email distinctes), " +
-    "retourne-les toutes distinctement pour permettre à l'utilisateur de choisir — ne devine jamais.",
+    "le résultat contient ambigu=true et la liste des expéditeurs distincts — dans ce cas, énumère-les et demande " +
+    "à l'utilisateur de préciser avant d'aller plus loin. Ne devine jamais laquelle choisir.",
   input_schema: {
     type: "object",
     properties: {
-      requete: { type: "string", description: "Terme de recherche ou requête Gmail (ex: 'from:julien', 'is:unread')" },
+      requete: { type: "string", description: "Terme de recherche ou requête (ex: 'Julien', 'is:unread', 'from:julien@...')" },
       max_resultats: { type: "number", description: "Nombre max de résultats (défaut 10)" },
     },
     required: ["requete"],
   },
   handler: async ({ requete, max_resultats = 10 }) => {
-    const gmail = await gmailClient();
-    const list = await gmail.users.messages.list({
-      userId: "me",
-      q: requete,
-      maxResults: max_resultats,
-    });
+    const provider = await getMailProvider();
+    const emails = await provider.search(requete, max_resultats);
 
-    const messages = list.data.messages ?? [];
-    const details = await Promise.all(
-      messages.map(async (m) => {
-        const msg = await gmail.users.messages.get({
-          userId: "me",
-          id: m.id!,
-          format: "metadata",
-          metadataHeaders: ["From", "Subject", "Date"],
-        });
-        const headers = msg.data.payload?.headers ?? [];
+    // Détection d'homonymes : recherche par nom simple (pas un opérateur Gmail) qui
+    // touche plusieurs expéditeurs distincts.
+    if (requete.trim() && !estRequeteAvecOperateur(requete)) {
+      const distincts = new Map<string, { nom: string; email: string }>();
+      for (const e of emails) distincts.set(e.deEmail, { nom: e.de, email: e.deEmail });
+      if (distincts.size > 1) {
         return {
-          id: msg.data.id,
-          threadId: msg.data.threadId,
-          de: headerValue(headers, "From"),
-          sujet: headerValue(headers, "Subject"),
-          date: headerValue(headers, "Date"),
-          extrait: msg.data.snippet,
-          nonLu: msg.data.labelIds?.includes("UNREAD") ?? false,
-          important: msg.data.labelIds?.includes("IMPORTANT") ?? false,
+          ambigu: true,
+          expediteurs: Array.from(distincts.values()),
+          message: "Plusieurs expéditeurs différents correspondent — demande à l'utilisateur de préciser lequel.",
         };
-      })
-    );
+      }
+    }
 
-    return { total: details.length, emails: details };
+    return { total: emails.length, ambigu: false, emails, source: provider.source };
   },
 };
 
 export const lireEmail: ToolDefinition = {
   name: "lire_email",
-  description: "Lit le contenu complet d'un email ou d'une conversation (thread) Gmail à partir de son id.",
+  description: "Lit le contenu complet d'un email ou d'une conversation (thread) à partir de son id.",
   input_schema: {
     type: "object",
     properties: {
@@ -76,30 +54,8 @@ export const lireEmail: ToolDefinition = {
     required: ["id"],
   },
   handler: async ({ id, type = "message" }) => {
-    const gmail = await gmailClient();
-    if (type === "thread") {
-      const thread = await gmail.users.threads.get({ userId: "me", id, format: "full" });
-      return {
-        messages: thread.data.messages?.map((m) => ({
-          id: m.id,
-          de: headerValue(m.payload?.headers ?? [], "From"),
-          sujet: headerValue(m.payload?.headers ?? [], "Subject"),
-          date: headerValue(m.payload?.headers ?? [], "Date"),
-          corps: decodeBody(m.payload).slice(0, 5000),
-        })),
-      };
-    }
-    const msg = await gmail.users.messages.get({ userId: "me", id, format: "full" });
-    const headers = msg.data.payload?.headers ?? [];
-    return {
-      id: msg.data.id,
-      threadId: msg.data.threadId,
-      de: headerValue(headers, "From"),
-      a: headerValue(headers, "To"),
-      sujet: headerValue(headers, "Subject"),
-      date: headerValue(headers, "Date"),
-      corps: decodeBody(msg.data.payload).slice(0, 8000),
-    };
+    const provider = await getMailProvider();
+    return provider.read(id, type);
   },
 };
 
@@ -119,7 +75,7 @@ export const resumerEmail: ToolDefinition = {
 export const redigerReponseEmail: ToolDefinition = {
   name: "rediger_reponse_email",
   description:
-    "Crée un BROUILLON de réponse dans Gmail (dans le thread d'origine) sans l'envoyer. " +
+    "Crée un BROUILLON de réponse (dans le thread d'origine) sans l'envoyer. " +
     "L'utilisateur devra explicitement demander l'envoi ensuite via envoyer_email.",
   input_schema: {
     type: "object",
@@ -132,19 +88,17 @@ export const redigerReponseEmail: ToolDefinition = {
     required: ["thread_id", "destinataire", "corps"],
   },
   handler: async ({ thread_id, destinataire, sujet, corps }) => {
-    const gmail = await gmailClient();
-    const raw = buildRawMessage({ to: destinataire, subject: sujet ?? "Re:", body: corps });
-    const draft = await gmail.users.drafts.create({
-      userId: "me",
-      requestBody: { message: { raw, threadId: thread_id } },
-    });
-    return { brouillonId: draft.data.id, message: "Brouillon créé, en attente d'envoi." };
+    const provider = await getMailProvider();
+    const draft = await provider.createDraft({ threadId: thread_id, destinataire, sujet, corps });
+    return { brouillonId: draft.brouillonId, message: "Brouillon créé, en attente d'envoi." };
   },
 };
 
 export const envoyerEmail: ToolDefinition = {
   name: "envoyer_email",
-  description: "Envoie réellement un email (ou un brouillon existant). Nécessite une confirmation utilisateur préalable.",
+  description:
+    "Envoie réellement un email (ou un brouillon existant). Nécessite une confirmation utilisateur préalable. " +
+    "En mode démonstration, l'email n'est pas réellement transmis : il est enregistré comme envoyé dans les données de démo.",
   input_schema: {
     type: "object",
     properties: {
@@ -156,25 +110,10 @@ export const envoyerEmail: ToolDefinition = {
     },
   },
   handler: async ({ brouillon_id, destinataire, sujet, corps, thread_id }) => {
-    const gmail = await gmailClient();
-    if (brouillon_id) {
-      const sent = await gmail.users.drafts.send({ userId: "me", requestBody: { id: brouillon_id } });
-      return { envoye: true, id: sent.data.id };
-    }
-    const raw = buildRawMessage({ to: destinataire, subject: sujet, body: corps });
-    const sent = await gmail.users.messages.send({
-      userId: "me",
-      requestBody: { raw, threadId: thread_id },
-    });
-    return { envoye: true, id: sent.data.id };
+    const provider = await getMailProvider();
+    const res = await provider.send({ brouillonId: brouillon_id, destinataire, sujet, corps, threadId: thread_id });
+    return { ...res, demo: provider.source === "demo" };
   },
 };
-
-function buildRawMessage({ to, subject, body }: { to?: string; subject?: string; body?: string }) {
-  const message = [`To: ${to}`, `Subject: ${subject ?? ""}`, "Content-Type: text/plain; charset=utf-8", "", body ?? ""].join(
-    "\n"
-  );
-  return Buffer.from(message).toString("base64url");
-}
 
 export const emailTools = [rechercherEmails, lireEmail, resumerEmail, redigerReponseEmail, envoyerEmail];

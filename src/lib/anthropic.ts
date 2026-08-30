@@ -1,9 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
-
-export const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-export const CLAUDE_MODEL = "claude-sonnet-5";
-
+// Prompt système partagé par tous les moteurs conversationnels (Mock ignore ce texte,
+// Anthropic s'en sert pour cadrer son raisonnement).
 export const SYSTEM_PROMPT = `Tu es NOTEO AI, l'assistant IA personnel du dirigeant d'une petite entreprise. Tu l'aides à piloter son activité : emails, ventes, facturation, agenda, tâches.
 
 Règles impératives :

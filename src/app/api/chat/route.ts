@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
-import { anthropic, CLAUDE_MODEL, SYSTEM_PROMPT } from "@/lib/anthropic";
+import { SYSTEM_PROMPT } from "@/lib/anthropic";
+import { getAIProvider } from "@/lib/ai";
+import type { AIMessage, AIToolResultBlock } from "@/lib/ai";
 import { ANTHROPIC_TOOL_SCHEMAS, TOOL_BY_NAME } from "@/lib/tools/registry";
 import { estAutomatique, niveauDe } from "@/lib/permissions";
-import type Anthropic from "@anthropic-ai/sdk";
 
 const MAX_TOOL_ROUNDS = 6;
 
@@ -31,31 +32,26 @@ export async function POST(req: Request) {
     take: 40,
   });
 
-  const messages: Anthropic.MessageParam[] = historique
+  const messages: AIMessage[] = historique
     .filter((m) => m.role !== "SYSTEM")
-    .map((m) => ({ role: m.role === "USER" ? "user" : "assistant", content: m.contenu }));
+    .map((m) => ({ role: m.role === "USER" ? "user" : "assistant", content: m.contenu }) as AIMessage);
 
+  const provider = getAIProvider();
   const pendingActions: PendingAction[] = [];
   let finalText = "";
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      tools: ANTHROPIC_TOOL_SCHEMAS as Anthropic.Tool[],
-      messages,
-    });
+    const response = await provider.converse({ system: SYSTEM_PROMPT, tools: ANTHROPIC_TOOL_SCHEMAS, messages });
 
-    const textBlocks = response.content.filter((b) => b.type === "text") as Anthropic.TextBlock[];
+    const textBlocks = response.content.filter((b) => b.type === "text");
     finalText = textBlocks.map((b) => b.text).join("\n") || finalText;
 
-    const toolUses = response.content.filter((b) => b.type === "tool_use") as Anthropic.ToolUseBlock[];
+    const toolUses = response.content.filter((b) => b.type === "tool_use");
     if (toolUses.length === 0) break;
 
     messages.push({ role: "assistant", content: response.content });
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    const toolResults: AIToolResultBlock[] = [];
     for (const call of toolUses) {
       const niveau = niveauDe(call.name);
       const tool = TOOL_BY_NAME[call.name];
@@ -100,14 +96,9 @@ export async function POST(req: Request) {
     messages.push({ role: "user", content: toolResults });
 
     if (pendingActions.length > 0) {
-      // On laisse Claude formuler sa proposition dans le prochain (et dernier) tour, sans relancer d'outils.
-      const closing = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 512,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      const closingText = closing.content.filter((b) => b.type === "text") as Anthropic.TextBlock[];
+      // On laisse l'IA formuler sa proposition dans un dernier tour de clôture, sans relancer d'outils.
+      const closing = await provider.converse({ system: SYSTEM_PROMPT, messages, tools: [] });
+      const closingText = closing.content.filter((b) => b.type === "text");
       finalText = closingText.map((b) => b.text).join("\n") || finalText;
       break;
     }
@@ -122,5 +113,5 @@ export async function POST(req: Request) {
     },
   });
 
-  return NextResponse.json({ reply: finalText, conversationId: conversation.id, pendingActions });
+  return NextResponse.json({ reply: finalText, conversationId: conversation.id, pendingActions, moteur: provider.id });
 }
