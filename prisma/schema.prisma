@@ -1,0 +1,273 @@
+// Schéma de données NOTEO AI — assistant personnel de pilotage d'entreprise
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Auth ---------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+
+  conversations Conversation[]
+  actionLogs    ActionLog[]
+}
+
+// --- Clients --------------------------------------------------------------
+
+model Client {
+  id                String   @id @default(cuid())
+  nom               String
+  email             String?
+  telephone         String?
+  adresse           String?
+  notes             String?
+  shopifyCustomerId String?  @unique
+  source            String   @default("manuel") // "manuel" | "shopify"
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  ventes   Vente[]
+  factures Facture[]
+
+  @@index([nom])
+  @@index([email])
+}
+
+// --- Catalogue --------------------------------------------------------------
+
+model Produit {
+  id               String   @id @default(cuid())
+  nom              String
+  sku              String?  @unique
+  prix             Decimal  @db.Decimal(10, 2)
+  stock            Int?
+  categorie        String?
+  shopifyProductId String?  @unique
+  actif            Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  ventes       Vente[]
+  factureItems FactureItem[]
+
+  @@index([nom])
+}
+
+// --- Ventes --------------------------------------------------------------
+
+enum SourceVente {
+  MANUELLE
+  SHOPIFY
+}
+
+enum StatutVente {
+  EN_ATTENTE
+  PAYEE
+  REMBOURSEE
+  ANNULEE
+}
+
+model Vente {
+  id             String      @id @default(cuid())
+  clientId       String?
+  client         Client?     @relation(fields: [clientId], references: [id])
+  clientNomLibre String? // si vente vocale sans fiche client existante
+  produitId      String?
+  produit        Produit?    @relation(fields: [produitId], references: [id])
+  description    String? // libellé libre si pas de produit du catalogue
+  montant        Decimal     @db.Decimal(10, 2)
+  moyenPaiement  String? // "carte" | "especes" | "virement" | "shopify" ...
+  statut         StatutVente @default(PAYEE)
+  source         SourceVente @default(MANUELLE)
+  shopifyOrderId String?     @unique
+  date           DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+
+  factures Facture[]
+  paiements Paiement[]
+
+  @@index([date])
+  @@index([source])
+}
+
+// --- Facturation --------------------------------------------------------------
+
+enum StatutFacture {
+  BROUILLON
+  ENVOYEE
+  PAYEE
+  ANNULEE
+}
+
+model Facture {
+  id             String        @id @default(cuid())
+  numero         String        @unique // ex: FAC-2026-0001
+  clientId       String
+  client         Client        @relation(fields: [clientId], references: [id])
+  venteId        String?
+  vente          Vente?        @relation(fields: [venteId], references: [id])
+  items          FactureItem[]
+  montantTotal   Decimal       @db.Decimal(10, 2)
+  statut         StatutFacture @default(BROUILLON)
+  pdfPath        String?
+  envoyeeLe      DateTime?
+  emailEnvoyeA   String?
+  createdAt      DateTime      @default(now())
+
+  paiements Paiement[]
+
+  @@index([numero])
+  @@index([clientId])
+}
+
+model FactureItem {
+  id           String   @id @default(cuid())
+  factureId    String
+  facture      Facture  @relation(fields: [factureId], references: [id], onDelete: Cascade)
+  produitId    String?
+  produit      Produit? @relation(fields: [produitId], references: [id])
+  description  String
+  quantite     Int      @default(1)
+  prixUnitaire Decimal  @db.Decimal(10, 2)
+}
+
+// --- Paiements --------------------------------------------------------------
+
+model Paiement {
+  id        String   @id @default(cuid())
+  factureId String?
+  facture   Facture? @relation(fields: [factureId], references: [id])
+  venteId   String?
+  vente     Vente?   @relation(fields: [venteId], references: [id])
+  montant   Decimal  @db.Decimal(10, 2)
+  moyen     String?
+  statut    String   @default("effectue") // "effectue" | "en_attente" | "echoue"
+  date      DateTime @default(now())
+}
+
+// --- Tâches & agenda (cache) --------------------------------------------------------------
+
+enum StatutTache {
+  A_FAIRE
+  EN_COURS
+  TERMINEE
+}
+
+model Tache {
+  id          String      @id @default(cuid())
+  titre       String
+  description String?
+  dateLimite  DateTime?
+  priorite    String      @default("normale") // "basse" | "normale" | "haute"
+  statut      StatutTache @default(A_FAIRE)
+  createdAt   DateTime    @default(now())
+
+  @@index([statut])
+  @@index([dateLimite])
+}
+
+// Cache local des événements Google Calendar (la source de vérité reste Calendar,
+// ce cache sert au dashboard et à la détection proactive de rendez-vous importants).
+model Evenement {
+  id             String   @id @default(cuid())
+  googleEventId  String   @unique
+  titre          String
+  description    String?
+  debut          DateTime
+  fin            DateTime?
+  important      Boolean  @default(false)
+  syncedAt       DateTime @default(now())
+
+  @@index([debut])
+}
+
+// --- Mémoire de l'IA / préférences --------------------------------------------------------------
+
+model Preference {
+  cle    String @id
+  valeur String
+}
+
+enum NiveauPermission {
+  AUTOMATIQUE
+  CONFIRMATION
+  CONFIRMATION_FORTE
+}
+
+enum StatutAction {
+  PROPOSEE
+  CONFIRMEE
+  EXECUTEE
+  ANNULEE
+  REJETEE
+}
+
+model ActionLog {
+  id         String           @id @default(cuid())
+  userId     String?
+  user       User?            @relation(fields: [userId], references: [id])
+  outil      String // nom du tool appelé, ex: "envoyer_email"
+  niveau     NiveauPermission
+  statut     StatutAction     @default(PROPOSEE)
+  parametres Json
+  resultat   Json?
+  erreur     String?
+  createdAt  DateTime         @default(now())
+  executeeLe DateTime?
+
+  @@index([outil])
+  @@index([statut])
+}
+
+// --- Alertes proactives (générées par l'IA ou par n8n) --------------------------------------------------------------
+
+model Alerte {
+  id        String   @id @default(cuid())
+  type      String // "ca_baisse" | "ca_hausse" | "produit_tendance" | "stock" | "client_important" | "email_urgent" | "rdv_important" | "tache_retard"
+  titre     String
+  message   String
+  niveau    String   @default("info") // "info" | "attention" | "urgent"
+  lue       Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([lue])
+}
+
+// --- Conversation --------------------------------------------------------------
+
+model Conversation {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  titre     String?
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+enum RoleMessage {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           RoleMessage
+  contenu        String
+  outilsAppeles  Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+}
